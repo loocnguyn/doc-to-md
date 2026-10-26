@@ -1,0 +1,12 @@
+node_modules
+dist
+.vercel
+.env*
+*.local
+.claude/
+
+# không commit tài liệu thật
+samples/
+*.pdf
+*.docx
+*.pptx

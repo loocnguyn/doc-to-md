@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Chuyển PDF, DOCX, PPTX sang Markdown ngay trong trình duyệt. File không rời khỏi máy bạn." />
+    <title>Doc → Markdown</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="top">
+        <h1>Doc → Markdown</h1>
+        <p class="lede">
+          Thả file PDF, DOCX hoặc PPTX vào đây để nhận lại file <code>.md</code>.
+          Mọi thứ chạy ngay trong trình duyệt, file không được tải lên server nào và không giới hạn dung lượng.
+        </p>
+      </header>
+
+      <label class="drop" id="drop">
+        <input id="file-input" type="file" multiple accept=".pdf,.docx,.pptx" hidden />
+        <span class="drop-title">Kéo thả file vào đây</span>
+        <span class="drop-sub">hoặc bấm để chọn · PDF, DOCX, PPTX · chọn được nhiều file</span>
+      </label>
+
+      <fieldset class="opts">
+        <label><input type="checkbox" id="opt-pages" checked /> Đánh dấu số trang/slide (<code>&lt;!-- trang 3 --&gt;</code>)</label>
+        <label><input type="checkbox" id="opt-notes" checked /> Lấy ghi chú người thuyết trình (PPTX)</label>
+      </fieldset>
+
+      <section class="results" id="results" hidden>
+        <div class="results-head">
+          <h2>Kết quả</h2>
+          <div class="results-actions">
+            <button type="button" id="download-all" class="btn" disabled>Tải tất cả (.zip)</button>
+            <button type="button" id="clear" class="btn ghost">Xoá danh sách</button>
+          </div>
+        </div>
+        <ul class="list" id="list"></ul>
+      </section>
+
+      <footer class="foot">
+        PDF: lấy lớp chữ có sẵn, bản scan cần OCR trước. DOCX/PPTX: chỉ định dạng Office 2007+, file .doc/.ppt cũ hãy lưu lại thành .docx/.pptx. Ảnh không được đưa vào file md.
+      </footer>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
