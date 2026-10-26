@@ -1,5 +1,6 @@
 import { pdfEnv } from './env.js';
 import { splitSyllables, createMixedSegmenter } from './segment.js';
+import { findTables } from './pdf-tables.js';
 
 /** Bộ tách từ Việt–Anh, nạp kèm từ điển ~110 KB lúc mở PDF đầu tiên. */
 let mixedSegmenter = null;
@@ -29,8 +30,11 @@ export async function pdfToMarkdown(buf, { pageMarkers = true, ocr = true, onPro
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);
       const content = await page.getTextContent();
-      await resolveBoldFonts(page, content.items, boldFonts);
-      let lines = buildLines(content.items, boldFonts);
+      // operator list dùng cho hai việc: nạp font (biết chữ đậm) và lấy đường kẻ (nhận bảng)
+      const opList = await page.getOperatorList().catch(() => null);
+      await resolveBoldFonts(page, content.items, boldFonts, !!opList);
+      const tables = opList ? findTables(opList, pdfjsLib.OPS, page.view) : [];
+      let lines = buildPageLines(content.items, boldFonts, tables);
 
       // trang không có lớp chữ (bản scan, ảnh chụp): vẽ ra ảnh rồi OCR
       if (ocr && charCount(lines) < 20) {
@@ -94,12 +98,10 @@ function summarizePages(nums) {
  * Font chỉ được nạp khi pdf.js dựng operator list của trang; sau đó tên font
  * (vd. "Arial-BoldMT") cho biết chữ đậm. Cách làm theo opengovsg/pdf2md.
  */
-async function resolveBoldFonts(page, items, cache) {
+async function resolveBoldFonts(page, items, cache, fontsLoaded) {
   const ids = new Set(items.map((it) => it.fontName).filter((id) => id && !cache.has(id)));
   if (!ids.size) return;
-  try {
-    await page.getOperatorList();
-  } catch {
+  if (!fontsLoaded) {
     for (const id of ids) cache.set(id, false);
     return;
   }
@@ -121,6 +123,76 @@ async function resolveBoldFonts(page, items, cache) {
   }
 }
 
+/**
+ * Chữ nằm trong bảng có kẻ viền được gom theo ô rồi ghi thành bảng markdown, đặt đúng chỗ
+ * bảng xuất hiện trong luồng chữ; phần còn lại dựng dòng như thường.
+ */
+function buildPageLines(items, boldFonts, tables) {
+  if (!tables.length) return buildLines(items, boldFonts);
+  const cells = tables.map(() => new Map());
+  const tableOf = new Map();
+  for (const it of items) {
+    if (!('str' in it) || !it.str.trim()) continue;
+    const [, , c, d, x, y] = it.transform;
+    const size = Math.hypot(c, d) || 1;
+    // tâm chữ: giữa bề ngang, nhích lên khỏi đường chân chữ một chút
+    const cx = x + it.width / 2;
+    const cy = y + size * 0.3;
+    for (let t = 0; t < tables.length; t++) {
+      const cell = tables[t].cellAt(cx, cy);
+      if (cell == null) continue;
+      if (!cells[t].has(cell)) cells[t].set(cell, []);
+      cells[t].get(cell).push(it);
+      tableOf.set(it, t);
+      break;
+    }
+  }
+
+  const rendered = tables.map((t, i) => renderTable(t, cells[i], boldFonts));
+  // lưới nhận nhầm (khung trang trí, quá ít chữ) thì trả chữ về luồng thường
+  const stream = [];
+  const placed = new Set();
+  for (const it of items) {
+    const t = tableOf.get(it);
+    if (t === undefined || !rendered[t]) {
+      stream.push(it);
+    } else if (!placed.has(t)) {
+      placed.add(t);
+      stream.push({ tableLine: rendered[t] });
+    }
+  }
+  return buildLines(stream, boldFonts);
+}
+
+function renderTable(table, cellItems, boldFonts) {
+  const grid = [];
+  for (let r = 0; r < table.rows; r++) {
+    const row = [];
+    for (let c = 0; c < table.cols; c++) {
+      const idx = r * table.cols + c;
+      // ô bị gộp vào ô khác thì để trống, chữ đã nằm ở ô gốc
+      const its = table.owner[idx] === idx ? cellItems.get(idx) : null;
+      row.push(its ? buildLines(its, boldFonts).map((l) => l.text).join(' ').replace(/\|/g, '\\|') : '');
+    }
+    grid.push(row);
+  }
+  const keep = [...Array(table.cols).keys()].filter((c) => grid.some((row) => row[c]));
+  const rows = grid.map((row) => keep.map((c) => row[c])).filter((row) => row.some(Boolean));
+  const filled = rows.flat().filter(Boolean);
+  if (rows.length < 2 || keep.length < 2 || filled.length < 3) return null;
+  // bảng ghép từ ô tô màu: các khối tô sáng xếp sát nhau (vd. đáp án trắc nghiệm) cũng thành
+  // lưới, nhưng phần lớn ô trống; bảng thật gần như ô nào cũng có chữ
+  if (table.kind === 'tiled' && filled.length < rows.length * keep.length * 0.6) return null;
+
+  const line = (row) => `| ${row.join(' | ')} |`;
+  return {
+    markdown: [line(rows[0]), `| ${keep.map(() => '---').join(' | ')} |`, ...rows.slice(1).map(line)].join('\n'),
+    text: filled.join(' '),
+    x: table.xs[0],
+    y: table.ys[0],
+  };
+}
+
 /** Gom các text item thành dòng, giữ thứ tự xuất hiện trong content stream. */
 function buildLines(items, boldFonts) {
   const lines = [];
@@ -136,6 +208,12 @@ function buildLines(items, boldFonts) {
   };
 
   for (const it of items) {
+    if (it.tableLine) {
+      close();
+      const t = it.tableLine;
+      lines.push({ text: t.text, table: t.markdown, x: t.x, y: t.y, size: 0, bold: false });
+      continue;
+    }
     if (!('str' in it)) continue;
     const [a, b, c, d, x, y] = it.transform;
     const size = Math.hypot(c, d) || Math.hypot(a, b) || 1;
@@ -253,7 +331,7 @@ function stripRepeated(pages) {
     // footer kiểu "Phần 4.1 · Tên phần 12" ở trang 12
     const pageNumRe = new RegExp(`(?:^|\\s)${i + 1}$|^${i + 1}\\s`);
     pages[i] = pages[i].filter((l) => {
-      if (!edges[i].has(l) || l.text.length > 120) return true;
+      if (l.table || !edges[i].has(l) || l.text.length > 120) return true;
       if (LONE_NUMBER_RE.test(l.text)) return false;
       if (l.text.length <= 100 && pageNumRe.test(l.text)) return false;
       return (seen.get(normalize(l.text)) || 0) < threshold;
@@ -281,8 +359,8 @@ function headingLevels(pages) {
   const headingLike = new Map();
   for (const lines of pages) {
     for (const l of lines) {
-      // chiều cao dòng OCR dao động theo nét chữ, không dùng để đoán cỡ chữ
-      if (l.ocr) continue;
+      // chiều cao dòng OCR dao động theo nét chữ, không dùng để đoán cỡ chữ; bảng không có cỡ chữ
+      if (l.ocr || l.table) continue;
       const key = roundSize(l.size);
       all.set(key, (all.get(key) || 0) + l.text.length);
       if (looksLikeHeading(l.text)) headingLike.set(key, (headingLike.get(key) || 0) + l.text.length);
@@ -341,6 +419,11 @@ function renderPage(lines, { levels, body, boldLevel }) {
   };
 
   for (const l of lines) {
+    if (l.table) {
+      flush();
+      blocks.push(l.table);
+      continue;
+    }
     const sizeLevel = l.ocr ? 0 : levels.get(roundSize(l.size));
     const level = sizeLevel && looksLikeHeading(l.text) ? sizeLevel : isBoldHeading(l, body) ? boldLevel : 0;
     const isHeading = level > 0;

@@ -28,7 +28,9 @@ export async function convertFile(file, opts = {}) {
   if (!load) throw new Error('Unsupported file type');
   const [convert, buf] = await Promise.all([load(), file.arrayBuffer()]);
   const out = await convert(buf, opts);
-  return { ...out, markdown: tidy(out.markdown) };
+  // "1 pages" → "1 page"
+  const unitLabel = out.unitCount === 1 ? out.unitLabel.replace(/s$/, '') : out.unitLabel;
+  return { ...out, unitLabel, markdown: tidy(out.markdown) };
 }
 
 function extOf(name) {
