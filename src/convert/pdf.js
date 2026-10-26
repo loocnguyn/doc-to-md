@@ -1,9 +1,8 @@
-import * as pdfjsLib from 'pdfjs-dist';
-import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { pdfEnv } from './env.js';
+import { splitSyllables, createMixedSegmenter } from './segment.js';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
-
-const CDN = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}`;
+/** Bộ tách từ Việt–Anh, nạp kèm từ điển ~110 KB lúc mở PDF đầu tiên. */
+let mixedSegmenter = null;
 const BULLET_RE = /^[•●▪■◦○◆◇►▶➢➤✓✔•‣⁃]\s*/;
 const LONE_NUMBER_RE = /^(?:trang\s*)?\d{1,4}(?:\s*\/\s*\d{1,4})?$/i;
 
@@ -11,36 +10,52 @@ const LONE_NUMBER_RE = /^(?:trang\s*)?\d{1,4}(?:\s*\/\s*\d{1,4})?$/i;
  * Ghép text của PDF thành markdown: dựng dòng theo thứ tự content stream,
  * đoán heading theo cỡ chữ, bỏ header/footer lặp lại và số trang.
  */
-export async function pdfToMarkdown(buf, { pageMarkers = true, onProgress } = {}) {
+export async function pdfToMarkdown(buf, { pageMarkers = true, ocr = true, onProgress, onStatus } = {}) {
+  const pdfjsLib = await pdfEnv.loadLib();
   const task = pdfjsLib.getDocument({
     data: new Uint8Array(buf),
-    cMapUrl: `${CDN}/cmaps/`,
-    cMapPacked: true,
-    standardFontDataUrl: `${CDN}/standard_fonts/`,
+    ...pdfEnv.documentOptions,
     // từ pdf.js 6.4, tên font (dùng để nhận chữ đậm) chỉ được giữ khi bật cờ này
     fontExtraProperties: true,
   });
+  mixedSegmenter ??= createMixedSegmenter(await pdfEnv.loadWords());
 
   const pages = [];
   const boldFonts = new Map();
+  const ocrPages = [];
+  let ocrEngine = null;
   try {
     const doc = await task.promise;
     for (let n = 1; n <= doc.numPages; n++) {
       const page = await doc.getPage(n);
       const content = await page.getTextContent();
       await resolveBoldFonts(page, content.items, boldFonts);
-      pages.push(buildLines(content.items, boldFonts));
+      let lines = buildLines(content.items, boldFonts);
+
+      // trang không có lớp chữ (bản scan, ảnh chụp): vẽ ra ảnh rồi OCR
+      if (ocr && charCount(lines) < 20) {
+        onStatus?.(ocrEngine ? `Reading scanned page ${n} (OCR)…` : 'Loading OCR engine (~5 MB, first time only)…');
+        ocrEngine ??= await import('./ocr.js').then((m) => m.createOcr(doc));
+        const ocrLines = await ocrEngine.recognizePage(page, (p) => onProgress?.((n - 1 + p) / doc.numPages));
+        if (charCount(ocrLines) > charCount(lines)) {
+          lines = ocrLines;
+          ocrPages.push(n);
+        }
+      }
+      pages.push(lines);
       page.cleanup();
       onProgress?.(n / doc.numPages);
     }
   } finally {
+    await ocrEngine?.terminate();
     await task.destroy();
   }
 
   const warnings = [];
-  const totalChars = pages.reduce((sum, lines) => sum + lines.reduce((s, l) => s + l.text.length, 0), 0);
-  if (totalChars < pages.length * 25) {
-    warnings.push('PDF gần như không có lớp chữ (có thể là bản scan). Hãy OCR trước, ví dụ bằng ocrmypdf, rồi chuyển lại.');
+  if (ocrPages.length) {
+    warnings.push(`Ran OCR on ${ocrPages.length} scanned page${ocrPages.length > 1 ? 's' : ''} (${summarizePages(ocrPages)}). Recognized text may contain mistakes — double-check anything important.`);
+  } else if (charCount(pages.flat()) < pages.length * 25) {
+    warnings.push('This PDF has almost no text layer (probably a scan). Turn on OCR to recognize the text.');
   }
 
   stripRepeated(pages);
@@ -48,15 +63,31 @@ export async function pdfToMarkdown(buf, { pageMarkers = true, onProgress } = {}
 
   const parts = pages.map((lines, i) => {
     const body = renderPage(lines, headings);
-    return pageMarkers ? `<!-- trang ${i + 1} -->\n\n${body}` : body;
+    return pageMarkers ? `<!-- page ${i + 1} -->\n\n${body}` : body;
   });
 
   return {
     markdown: parts.join('\n\n'),
     warnings,
     unitCount: pages.length,
-    unitLabel: 'trang',
+    unitLabel: 'pages',
   };
+}
+
+function charCount(lines) {
+  return lines.reduce((sum, l) => sum + l.text.length, 0);
+}
+
+/** [1,2,3,5,7,8] → "1–3, 5, 7–8" */
+function summarizePages(nums) {
+  const parts = [];
+  for (let i = 0; i < nums.length; i++) {
+    let j = i;
+    while (j + 1 < nums.length && nums[j + 1] === nums[j] + 1) j++;
+    parts.push(i === j ? `${nums[i]}` : `${nums[i]}–${nums[j]}`);
+    i = j;
+  }
+  return `${nums.length > 1 ? 'pages' : 'page'} ${parts.join(', ')}`;
 }
 
 /**
@@ -171,24 +202,24 @@ function finishLine(line) {
 }
 
 function clean(text) {
-  return fixSpacedLetters(text.replace(/\s+/g, ' ').trim()).replace(/(\d) \. (?=\d)/g, '$1.');
+  // NFC: nhiều PDF lưu chữ có dấu dạng tổ hợp (O + móc + ngã) — vừa tốn token vừa làm
+  // "Ỡ" không còn là một ký tự khi ghép chữ giãn cách
+  const nfc = text.normalize('NFC').replace(/\s+/g, ' ').trim();
+  return fixSpacedLetters(nfc).replace(/(\d) \. (?=\d)/g, '$1.');
 }
-
-const ONSETS = new Set(['ngh', 'ng', 'nh', 'ch', 'gh', 'gi', 'kh', 'ph', 'qu', 'th', 'tr',
-  'b', 'c', 'd', 'đ', 'g', 'h', 'k', 'l', 'm', 'n', 'p', 'q', 'r', 's', 't', 'v', 'x']);
-const CODAS = new Set(['ch', 'ng', 'nh', 'c', 'm', 'n', 'p', 't']);
 
 /**
  * Slide thiết kế hay giãn chữ thành "C H Ư Ơ N G 4" và PDF không còn giữ ranh giới từ.
- * Gom chuỗi chữ cái đơn lẻ lại rồi tách theo âm tiết tiếng Việt; không tách được thì ghép liền.
+ * Gom chuỗi chữ cái đơn lẻ lại rồi tách theo âm tiết tiếng Việt; không được thì tách
+ * lẫn Việt–Anh bằng từ điển ("CASESTUDY" → "CASE STUDY"); vẫn không được thì ghép liền.
  */
 function fixSpacedLetters(text) {
   const out = [];
   let run = [];
   const flush = () => {
     if (run.length >= 4) {
-      const syllables = splitSyllables(run);
-      out.push(syllables ? syllables.join(' ') : run.join(''));
+      const words = mixedSegmenter ? mixedSegmenter(run) : splitSyllables(run);
+      out.push(words ? words.join(' ') : run.join(''));
     } else {
       out.push(...run);
     }
@@ -203,69 +234,6 @@ function fixSpacedLetters(text) {
   }
   flush();
   return out.join(' ');
-}
-
-function splitSyllables(letters) {
-  const groups = [];
-  for (const ch of letters) {
-    const vowel = /[aeiouy]/.test(baseLetters(ch));
-    const last = groups.at(-1);
-    if (last && last.vowel === vowel) last.s += ch;
-    else groups.push({ vowel, s: ch });
-  }
-  if (!groups.some((g) => g.vowel)) return null;
-
-  const syllables = [];
-  let cur = '';
-  for (let i = 0; i < groups.length; i++) {
-    const { vowel, s } = groups[i];
-    if (vowel) {
-      if (s.length > 3) return null;
-      cur += s;
-      continue;
-    }
-    const lc = baseLetters(s);
-    if (i === 0) {
-      if (!ONSETS.has(lc)) return null;
-      cur += s;
-      continue;
-    }
-    if (i === groups.length - 1) {
-      if (!CODAS.has(lc)) return null;
-      cur += s;
-      continue;
-    }
-    // cụm phụ âm giữa hai vần: ưu tiên phụ âm đầu dài nhất cho âm tiết sau
-    const nextVowel = baseLetters(groups[i + 1].s);
-    let split = -1;
-    for (let len = Math.min(3, s.length); len >= 0; len--) {
-      const onset = lc.slice(s.length - len);
-      const coda = lc.slice(0, s.length - len);
-      if ((len === 0 || validOnset(onset, nextVowel)) && (coda === '' || CODAS.has(coda))) {
-        split = s.length - len;
-        break;
-      }
-    }
-    if (split < 0) return null;
-    syllables.push(cur + s.slice(0, split));
-    cur = s.slice(split);
-  }
-  syllables.push(cur);
-  return syllables;
-}
-
-/** Luật chính tả: "nghi" chứ không "ngi", "ki/ke" chứ không "ci/ce", "gh"/"ngh" chỉ trước i, e. */
-function validOnset(onset, vowel) {
-  if (!ONSETS.has(onset)) return false;
-  const front = /^[iey]/.test(vowel);
-  if (onset === 'ng' || onset === 'c') return !front;
-  if (onset === 'k' || onset === 'gh' || onset === 'ngh') return front;
-  if (onset === 'q') return vowel.startsWith('u');
-  return true;
-}
-
-function baseLetters(s) {
-  return s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
 /**
@@ -313,6 +281,8 @@ function headingLevels(pages) {
   const headingLike = new Map();
   for (const lines of pages) {
     for (const l of lines) {
+      // chiều cao dòng OCR dao động theo nét chữ, không dùng để đoán cỡ chữ
+      if (l.ocr) continue;
       const key = roundSize(l.size);
       all.set(key, (all.get(key) || 0) + l.text.length);
       if (looksLikeHeading(l.text)) headingLike.set(key, (headingLike.get(key) || 0) + l.text.length);
@@ -371,7 +341,7 @@ function renderPage(lines, { levels, body, boldLevel }) {
   };
 
   for (const l of lines) {
-    const sizeLevel = levels.get(roundSize(l.size));
+    const sizeLevel = l.ocr ? 0 : levels.get(roundSize(l.size));
     const level = sizeLevel && looksLikeHeading(l.text) ? sizeLevel : isBoldHeading(l, body) ? boldLevel : 0;
     const isHeading = level > 0;
 

@@ -5,8 +5,9 @@ import { gfm } from 'turndown-plugin-gfm';
 export async function docxToMarkdown(buf, { onProgress } = {}) {
   onProgress?.(0.2);
   let images = 0;
-  const { value: html, messages } = await mammoth.convertToHtml(
-    { arrayBuffer: buf },
+  const { value: html } = await mammoth.convertToHtml(
+    // bản Node của mammoth đọc Buffer, bản trình duyệt đọc ArrayBuffer
+    typeof Buffer !== 'undefined' ? { buffer: Buffer.from(buf) } : { arrayBuffer: buf },
     {
       // bỏ ảnh: base64 nhúng vào md vừa nặng vừa tốn token mà LLM không đọc được
       convertImage: mammoth.images.imgElement(async () => {
@@ -17,7 +18,8 @@ export async function docxToMarkdown(buf, { onProgress } = {}) {
   );
   onProgress?.(0.7);
 
-  const dom = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html');
+  // bọc đủ <html>: linkedom (Node) không tự dựng khung tài liệu như trình duyệt
+  const dom = new DOMParser().parseFromString(`<!doctype html><html><head></head><body>${html}</body></html>`, 'text/html');
   prepareTables(dom);
 
   const td = new TurndownService({
@@ -38,19 +40,17 @@ export async function docxToMarkdown(buf, { onProgress } = {}) {
   onProgress?.(1);
 
   const warnings = [];
-  if (images) warnings.push(`Đã bỏ ${images} ảnh trong tài liệu (md chỉ giữ chữ).`);
-  if (!markdown.trim()) warnings.push('Không tìm thấy chữ trong file.');
+  if (images) warnings.push(`Skipped ${images} image${images > 1 ? 's' : ''} (Markdown keeps text only).`);
+  if (!markdown.trim()) warnings.push('No text found in this file.');
   else if (images >= 3 && markdown.length < images * 100) {
-    warnings.push('Tài liệu chủ yếu là ảnh (ảnh chụp màn hình, ảnh scan); chữ nằm trong ảnh sẽ không có trong file md.');
+    warnings.push('This document is mostly images (screenshots or scans); text inside images is not included.');
   }
-  const unsupported = messages.filter((m) => m.type === 'warning').length;
-  if (unsupported) console.info('mammoth:', messages);
 
   return {
     markdown,
     warnings,
     unitCount: dom.body.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li').length,
-    unitLabel: 'đoạn',
+    unitLabel: 'paragraphs',
   };
 }
 
@@ -65,9 +65,10 @@ function prepareTables(dom) {
       const text = (parts.length ? parts.join(' ') : cellNode.textContent).replace(/\s+/g, ' ').trim();
       cellNode.textContent = text.replace(/\|/g, '/');
     }
-    const first = table.rows[0];
+    // không dùng table.rows / tr.cells: DOM giả lập trong Node (linkedom) không có
+    const first = table.querySelector('tr');
     if (!first) continue;
-    for (const cellNode of [...first.cells]) {
+    for (const cellNode of [...first.children].filter((c) => c.nodeName === 'TD' || c.nodeName === 'TH')) {
       if (cellNode.nodeName === 'TH') continue;
       const th = dom.createElement('th');
       th.textContent = cellNode.textContent;

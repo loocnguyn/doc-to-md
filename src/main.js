@@ -1,5 +1,6 @@
 import './style.css';
-import { convertFile, isSupported } from './convert/index.js';
+import './browser-env.js';
+import { convertFile, isSupported, ACCEPT } from './convert/index.js';
 
 const input = document.getElementById('file-input');
 const drop = document.getElementById('drop');
@@ -9,10 +10,12 @@ const downloadAllBtn = document.getElementById('download-all');
 const clearBtn = document.getElementById('clear');
 const optPages = document.getElementById('opt-pages');
 const optNotes = document.getElementById('opt-notes');
+const optOcr = document.getElementById('opt-ocr');
 
-/** @type {{ id: number, name: string, mdName: string, markdown?: string }[]} */
+input.accept = ACCEPT;
+
+/** @type {{ name: string, mdName: string, markdown: string }[]} */
 const done = [];
-let nextId = 1;
 // chuyển lần lượt từng file để không ngốn RAM khi thả nhiều file lớn cùng lúc
 let queue = Promise.resolve();
 
@@ -43,14 +46,12 @@ clearBtn.addEventListener('click', () => {
 });
 
 downloadAllBtn.addEventListener('click', async () => {
-  const ready = done.filter((d) => d.markdown != null);
-  if (ready.length === 1) return saveMarkdown(ready[0].mdName, ready[0].markdown);
+  if (done.length === 1) return saveMarkdown(done[0].mdName, done[0].markdown);
   const { default: JSZip } = await import('jszip');
   const zip = new JSZip();
   const used = new Set();
-  for (const d of ready) zip.file(uniqueName(d.mdName, used), d.markdown);
-  const blob = await zip.generateAsync({ type: 'blob' });
-  saveBlob('markdown.zip', blob);
+  for (const d of done) zip.file(uniqueName(d.mdName, used), d.markdown);
+  saveBlob('markdown.zip', await zip.generateAsync({ type: 'blob' }));
 });
 
 function handleFiles(fileList) {
@@ -58,92 +59,104 @@ function handleFiles(fileList) {
   if (!files.length) return;
   results.hidden = false;
   for (const file of files) {
-    const view = renderItem(file);
-    queue = queue.then(() => processFile(file, view));
+    const row = renderRow(file);
+    queue = queue.then(() => processFile(file, row));
   }
 }
 
-async function processFile(file, view) {
-  const entry = { id: nextId++, name: file.name, mdName: toMdName(file.name) };
+async function processFile(file, row) {
   if (!isSupported(file.name)) {
-    view.fail(unsupportedMessage(file.name));
+    row.fail(unsupportedMessage(file.name));
     return;
   }
-  view.status('Đang chuyển…');
+  row.busy('Converting…');
   const started = performance.now();
   try {
     const out = await convertFile(file, {
       pageMarkers: optPages.checked,
       notes: optNotes.checked,
-      onProgress: (p) => view.progress(p),
+      ocr: optOcr.checked,
+      onProgress: (p) => row.progress(p),
+      onStatus: (s) => row.busy(s),
     });
-    entry.markdown = out.markdown;
+    const entry = { name: file.name, mdName: toMdName(file.name), markdown: out.markdown };
     done.push(entry);
-    view.success(entry, out, performance.now() - started);
+    row.success(entry, out, performance.now() - started);
   } catch (err) {
     console.error(err);
-    view.fail(friendlyError(err));
+    row.fail(friendlyError(err));
   }
   updateDownloadAll();
 }
 
-function renderItem(file) {
-  const li = el('li', 'item');
-  const row = el('div', 'item-row');
-  const info = el('div');
-  const name = el('div', 'item-name', file.name);
-  const meta = el('div', 'item-meta', formatBytes(file.size));
-  info.append(name, meta);
-  const actions = el('div', 'item-actions');
-  row.append(info, actions);
+function renderRow(file) {
+  const tr = el('tr');
+  const name = el('td', 'col-name', file.name);
+  const size = el('td', 'col-size', formatBytes(file.size));
+  const result = el('td', 'col-result');
+  const actions = el('td', 'col-actions');
+  tr.append(name, size, result, actions);
+  list.append(tr);
+
+  const state = el('span', 'state busy', 'Queued');
+  const detail = el('span', 'detail');
   const bar = el('div', 'progress');
   const fill = el('span');
   bar.append(fill);
-  li.append(row, bar);
-  list.append(li);
+  result.append(state, detail);
+
+  let previewRow = null;
 
   return {
-    status(text) {
-      meta.textContent = `${formatBytes(file.size)} · ${text}`;
+    busy(text) {
+      state.className = 'state busy';
+      state.textContent = text;
+      if (!bar.isConnected) result.append(bar);
     },
     progress(p) {
       fill.style.width = `${Math.round(p * 100)}%`;
     },
     fail(message) {
       bar.remove();
-      meta.replaceChildren(`${formatBytes(file.size)} · `, el('span', 'err', message));
+      state.className = 'state err';
+      state.textContent = 'Failed';
+      detail.textContent = message;
     },
     success(entry, out, ms) {
       bar.remove();
-      const chars = out.markdown.length;
-      meta.replaceChildren(
-        `${formatBytes(file.size)} → ${formatBytes(new Blob([out.markdown]).size)} · `,
-        el('span', 'ok', 'Xong'),
-        ` · ${out.unitCount} ${out.unitLabel} · ~${formatNumber(estimateTokens(chars))} token · ${(ms / 1000).toFixed(1)}s`,
-      );
-      for (const w of out.warnings) li.append(el('p', 'warn', w));
+      state.className = 'state ok';
+      state.textContent = 'Done';
+      const units = typeof out.unitCount === 'number' ? `${formatNumber(out.unitCount)} ${out.unitLabel} · ` : '';
+      detail.textContent =
+        `${units}~${formatNumber(estimateTokens(out.markdown.length))} tokens · ` +
+        `${formatBytes(new Blob([out.markdown]).size)} · ${(ms / 1000).toFixed(1)}s`;
+      for (const w of out.warnings) result.append(el('span', 'warn', w));
 
-      const dl = button('Tải .md', () => saveMarkdown(entry.mdName, entry.markdown));
-      const copy = button('Sao chép', async () => {
+      const dl = button('Download', () => saveMarkdown(entry.mdName, entry.markdown));
+      const copy = button('Copy', async () => {
         await navigator.clipboard.writeText(entry.markdown);
-        flash(copy, 'Đã chép');
+        flash(copy, 'Copied');
       }, true);
-      let pre;
-      const toggle = button('Xem trước', () => {
-        if (pre) {
-          pre.remove();
-          pre = null;
-          toggle.textContent = 'Xem trước';
+      const toggle = button('Preview', () => {
+        if (previewRow) {
+          previewRow.remove();
+          previewRow = null;
+          toggle.textContent = 'Preview';
           return;
         }
-        pre = el('pre', 'preview');
+        previewRow = el('tr', 'preview-row');
+        const cell = el('td');
+        cell.colSpan = 4;
+        const pre = el('pre', 'preview');
         // chỉ hiện phần đầu để trang không bị đơ với file rất dài
         const limit = 20000;
         pre.textContent = entry.markdown.length > limit
-          ? `${entry.markdown.slice(0, limit)}\n\n… (còn ${formatNumber(entry.markdown.length - limit)} ký tự, tải file để xem đủ)`
+          ? `${entry.markdown.slice(0, limit)}\n\n… ${formatNumber(entry.markdown.length - limit)} more characters. Download the file to see everything.`
           : entry.markdown;
-        li.append(pre);
-        toggle.textContent = 'Ẩn';
+        cell.append(pre);
+        previewRow.append(cell);
+        tr.after(previewRow);
+        toggle.textContent = 'Hide';
       }, true);
       actions.append(dl, copy, toggle);
     },
@@ -151,9 +164,8 @@ function renderItem(file) {
 }
 
 function updateDownloadAll() {
-  const n = done.filter((d) => d.markdown != null).length;
-  downloadAllBtn.disabled = n === 0;
-  downloadAllBtn.textContent = n > 1 ? `Tải tất cả (.zip, ${n} file)` : 'Tải tất cả';
+  downloadAllBtn.disabled = done.length === 0;
+  downloadAllBtn.textContent = done.length > 1 ? `Download all (.zip, ${done.length})` : 'Download all';
 }
 
 function saveMarkdown(name, markdown) {
@@ -183,17 +195,15 @@ function uniqueName(name, used) {
 }
 
 function unsupportedMessage(name) {
-  const ext = name.split('.').pop().toLowerCase();
-  if (ext === 'doc') return 'File .doc cũ chưa hỗ trợ. Mở bằng Word và lưu lại thành .docx.';
-  if (ext === 'ppt') return 'File .ppt cũ chưa hỗ trợ. Mở bằng PowerPoint và lưu lại thành .pptx.';
-  return 'Định dạng chưa hỗ trợ (chỉ PDF, DOCX, PPTX).';
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+  return ext ? `.${ext} files are not supported yet.` : 'Unknown file type.';
 }
 
 function friendlyError(err) {
   const msg = String(err?.message || err);
-  if (/password/i.test(msg)) return 'PDF có mật khẩu, hãy gỡ mật khẩu rồi thử lại.';
-  if (/Invalid PDF|corrupted|end of central directory|zip/i.test(msg)) return 'File bị hỏng hoặc không đúng định dạng.';
-  return `Lỗi: ${msg}`;
+  if (/password/i.test(msg)) return 'This PDF is password-protected. Remove the password and try again.';
+  if (/Invalid PDF|corrupted|end of central directory|zip/i.test(msg)) return 'The file looks damaged or is not the format its extension says.';
+  return msg;
 }
 
 // tiếng Việt có dấu tốn token hơn tiếng Anh, ~3 ký tự/token là ước lượng thận trọng
@@ -208,7 +218,7 @@ function formatBytes(n) {
 }
 
 function formatNumber(n) {
-  return n.toLocaleString('vi-VN');
+  return n.toLocaleString('en-US');
 }
 
 function el(tag, className, text) {
@@ -218,8 +228,8 @@ function el(tag, className, text) {
   return node;
 }
 
-function button(label, onClick, ghost = false) {
-  const b = el('button', ghost ? 'btn ghost' : 'btn', label);
+function button(label, onClick, secondary = false) {
+  const b = el('button', secondary ? 'btn small secondary' : 'btn small', label);
   b.type = 'button';
   b.addEventListener('click', onClick);
   return b;

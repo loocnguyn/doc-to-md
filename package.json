@@ -1,17 +1,47 @@
 {
   "name": "doc-to-md",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
+  "description": "Convert PDF, Word, PowerPoint and Excel files to clean Markdown, in the browser or from the command line.",
+  "keywords": [
+    "markdown",
+    "pdf-to-markdown",
+    "docx",
+    "pptx",
+    "xlsx",
+    "ocr",
+    "llm",
+    "converter"
+  ],
+  "homepage": "https://doc-to-md-three.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/loocnguyn/doc-to-md.git"
+  },
+  "bugs": {
+    "url": "https://github.com/loocnguyn/doc-to-md/issues"
+  },
   "type": "module",
+  "bin": {
+    "doc2md": "cli/doc2md.js"
+  },
+  "engines": {
+    "node": ">=20.16"
+  },
   "scripts": {
     "dev": "vite --port 5173",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test",
+    "md": "node cli/doc2md.js"
   },
   "dependencies": {
     "jszip": "^3.10.2",
+    "linkedom": "^0.18.14",
     "mammoth": "^1.13.0",
+    "office-oxide-wasm": "^0.1.8",
     "pdfjs-dist": "^6.4.299",
+    "tesseract.js": "^7.0.0",
     "turndown": "^7.2.4",
     "turndown-plugin-gfm": "^1.0.2"
   },

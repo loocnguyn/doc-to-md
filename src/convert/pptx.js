@@ -8,7 +8,7 @@ const BODY_TYPES = new Set(['body', 'obj', undefined]);
 export async function pptxToMarkdown(buf, { pageMarkers = true, notes = true, onProgress } = {}) {
   const zip = await JSZip.loadAsync(buf);
   const slidePaths = await slideOrder(zip);
-  if (!slidePaths.length) throw new Error('Không tìm thấy slide nào trong file');
+  if (!slidePaths.length) throw new Error('No slides found in this file');
 
   const out = [];
   let hidden = 0;
@@ -23,7 +23,7 @@ export async function pptxToMarkdown(buf, { pageMarkers = true, notes = true, on
 
     const rels = await readRels(zip, path);
     const { title, blocks } = await readShapes(xml, zip, rels);
-    const heading = `## Slide ${i + 1}${title ? `: ${title}` : ''}${isHidden ? ' (slide ẩn)' : ''}`;
+    const heading = `## Slide ${i + 1}${title ? `: ${title}` : ''}${isHidden ? ' (hidden)' : ''}`;
     const parts = [];
     if (pageMarkers) parts.push(`<!-- slide ${i + 1} -->`);
     parts.push(heading, ...blocks);
@@ -32,7 +32,7 @@ export async function pptxToMarkdown(buf, { pageMarkers = true, notes = true, on
       const text = await readNotes(zip, path);
       if (text) {
         noteCount++;
-        parts.push(text.split('\n').map((line, j) => (j === 0 ? `> **Ghi chú:** ${line}` : `> ${line}`)).join('\n'));
+        parts.push(text.split('\n').map((line, j) => (j === 0 ? `> **Notes:** ${line}` : `> ${line}`)).join('\n'));
       }
     }
     out.push(parts.join('\n\n'));
@@ -40,10 +40,10 @@ export async function pptxToMarkdown(buf, { pageMarkers = true, notes = true, on
   }
 
   const warnings = [];
-  if (hidden) warnings.push(`Có ${hidden} slide ẩn, đã giữ lại và đánh dấu "(slide ẩn)".`);
-  if (notes && noteCount) warnings.push(`Đã lấy ghi chú người thuyết trình ở ${noteCount} slide.`);
+  if (hidden) warnings.push(`${hidden} hidden slide${hidden > 1 ? 's were' : ' was'} kept and marked "(hidden)".`);
+  if (notes && noteCount) warnings.push(`Included speaker notes from ${noteCount} slide${noteCount > 1 ? 's' : ''}.`);
 
-  return { markdown: out.join('\n\n'), warnings, unitCount: slidePaths.length, unitLabel: 'slide' };
+  return { markdown: out.join('\n\n'), warnings, unitCount: slidePaths.length, unitLabel: 'slides' };
 }
 
 /** Thứ tự slide thật nằm trong presentation.xml, không phải theo tên file. */
@@ -130,7 +130,7 @@ async function readShapes(xml, zip, rels) {
 
   function picture(pic) {
     const descr = (byTag(pic, 'p:cNvPr')[0]?.getAttribute('descr') || '').replace(/\s+/g, ' ').trim();
-    if (descr) blocks.push(`[Hình: ${descr}]`);
+    if (descr) blocks.push(`[Image: ${descr}]`);
   }
 
   function shape(sp) {
@@ -187,7 +187,7 @@ async function chart(zip, path) {
     return { name: name.trim(), cats: points(cat), vals: points(val) };
   });
 
-  const head = `**Biểu đồ${title ? `: ${title}` : ''}**`;
+  const head = `**Chart${title ? `: ${title}` : ''}**`;
   if (!series.length) return head;
   const cats = series[0].cats;
   const count = Math.max(cats.size, ...series.map((s) => s.vals.size));
@@ -195,7 +195,7 @@ async function chart(zip, path) {
   for (let i = 0; i < count; i++) {
     rows.push([cats.get(i) ?? String(i + 1), ...series.map((s) => s.vals.get(i) ?? '')]);
   }
-  const header = ['Danh mục', ...series.map((s, i) => s.name || `Chuỗi ${i + 1}`)];
+  const header = ['Category', ...series.map((s, i) => s.name || `Series ${i + 1}`)];
   return [head, '', mdTable([header, ...rows])].join('\n');
 }
 

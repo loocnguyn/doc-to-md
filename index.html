@@ -1,48 +1,125 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Chuyển PDF, DOCX, PPTX sang Markdown ngay trong trình duyệt. File không rời khỏi máy bạn." />
-    <title>Doc → Markdown</title>
+    <meta name="description" content="Convert PDF, Word, PowerPoint and Excel files to clean Markdown in your browser. Files never leave your device." />
+    <title>Doc to Markdown</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
   <body>
+    <header class="site-header">
+      <div class="wrap header-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.svg" alt="" width="24" height="24" />
+          <span>Doc&nbsp;→&nbsp;Markdown</span>
+        </a>
+        <nav class="nav">
+          <a href="#how">How it works</a>
+          <a href="https://github.com/loocnguyn/doc-to-md" rel="noopener">GitHub</a>
+        </nav>
+      </div>
+    </header>
+
     <main class="wrap">
-      <header class="top">
-        <h1>Doc → Markdown</h1>
+      <section class="intro">
+        <h1>Turn documents into clean Markdown</h1>
         <p class="lede">
-          Thả file PDF, DOCX hoặc PPTX vào đây để nhận lại file <code>.md</code>.
-          Mọi thứ chạy ngay trong trình duyệt, file không được tải lên server nào và không giới hạn dung lượng.
+          Convert PDF, Word, PowerPoint and Excel files to Markdown, ready for notes, wikis,
+          or pasting into an AI chat with far fewer tokens. Everything runs in your browser,
+          so your files are never uploaded.
         </p>
-      </header>
+      </section>
 
       <label class="drop" id="drop">
-        <input id="file-input" type="file" multiple accept=".pdf,.docx,.pptx" hidden />
-        <span class="drop-title">Kéo thả file vào đây</span>
-        <span class="drop-sub">hoặc bấm để chọn · PDF, DOCX, PPTX · chọn được nhiều file</span>
+        <input id="file-input" type="file" multiple hidden />
+        <svg class="drop-icon" viewBox="0 0 24 24" width="36" height="36" aria-hidden="true">
+          <path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="drop-title">Drop files here or <span class="link">browse</span></span>
+        <span class="drop-sub">PDF, DOCX, PPTX, DOC, PPT, XLS, XLSX · any size · as many as you like</span>
       </label>
 
       <fieldset class="opts">
-        <label><input type="checkbox" id="opt-pages" checked /> Đánh dấu số trang/slide (<code>&lt;!-- trang 3 --&gt;</code>)</label>
-        <label><input type="checkbox" id="opt-notes" checked /> Lấy ghi chú người thuyết trình (PPTX)</label>
+        <legend>Options</legend>
+        <label>
+          <input type="checkbox" id="opt-pages" checked />
+          <span><strong>Page and slide markers</strong><small>Adds <code>&lt;!-- page 3 --&gt;</code> so you can refer to locations</small></span>
+        </label>
+        <label>
+          <input type="checkbox" id="opt-notes" checked />
+          <span><strong>Speaker notes</strong><small>Includes presenter notes from PowerPoint</small></span>
+        </label>
+        <label>
+          <input type="checkbox" id="opt-ocr" checked />
+          <span><strong>OCR for scanned pages</strong><small>Reads image-only PDF pages (Vietnamese + English); downloads ~5&nbsp;MB once</small></span>
+        </label>
       </fieldset>
 
       <section class="results" id="results" hidden>
         <div class="results-head">
-          <h2>Kết quả</h2>
-          <div class="results-actions">
-            <button type="button" id="download-all" class="btn" disabled>Tải tất cả (.zip)</button>
-            <button type="button" id="clear" class="btn ghost">Xoá danh sách</button>
+          <h2>Results</h2>
+          <div class="toolbar">
+            <button type="button" id="download-all" class="btn" disabled>Download all</button>
+            <button type="button" id="clear" class="btn secondary">Clear</button>
           </div>
         </div>
-        <ul class="list" id="list"></ul>
+        <table class="files">
+          <thead>
+            <tr>
+              <th scope="col">File</th>
+              <th scope="col">Size</th>
+              <th scope="col">Result</th>
+              <th scope="col"><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="list"></tbody>
+        </table>
       </section>
 
-      <footer class="foot">
-        PDF: lấy lớp chữ có sẵn, bản scan cần OCR trước. DOCX/PPTX: chỉ định dạng Office 2007+, file .doc/.ppt cũ hãy lưu lại thành .docx/.pptx. Ảnh không được đưa vào file md.
-      </footer>
+      <section class="how" id="how">
+        <h2>How it works</h2>
+        <ol class="steps">
+          <li>
+            <strong>Drop your files.</strong>
+            Mix any of the supported formats. Large files are fine.
+          </li>
+          <li>
+            <strong>They are converted on your device.</strong>
+            Nothing is sent to a server. Headings, lists, tables and slide titles are kept;
+            repeated headers, footers and page numbers are removed.
+          </li>
+          <li>
+            <strong>Download the Markdown.</strong>
+            Save one file at a time, copy it, or download everything as a .zip.
+          </li>
+        </ol>
+      </section>
+
+      <section class="formats">
+        <h2>What you get</h2>
+        <dl>
+          <dt>PDF</dt>
+          <dd>Headings from font size and bold text, paragraphs and bullet lists, headers and footers removed, spaced-out titles like “C H A P T E R” rejoined, OCR for scanned pages.</dd>
+          <dt>Word <small>.docx .doc</small></dt>
+          <dd>Headings, lists and tables. Images are skipped.</dd>
+          <dt>PowerPoint <small>.pptx .ppt</small></dt>
+          <dd>Slide titles, bullet levels, tables, charts as data tables, SmartArt text, image alt text and speaker notes.</dd>
+          <dt>Excel <small>.xlsx .xls</small></dt>
+          <dd>Each sheet as a table, with empty rows and columns removed.</dd>
+        </dl>
+      </section>
     </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <p>Your files never leave your browser.</p>
+        <p>
+          Open source on <a href="https://github.com/loocnguyn/doc-to-md" rel="noopener">GitHub</a>.
+          Built with pdf.js, Mammoth, Turndown, Tesseract.js and office_oxide.
+        </p>
+      </div>
+    </footer>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
