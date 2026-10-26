@@ -1,0 +1,5 @@
+samples/
+.claude/
+*.pdf
+*.docx
+*.pptx
